@@ -1716,18 +1716,11 @@ void address_to_scripttxn(char *pkh, const char *addr)
 /*  For encoding nHeight into coinbase, return how many bytes were used */
 int ser_number(uchar *s, int32_t val)
 {
-	int32_t *i32 = (int32_t *)&s[1];
-	int len;
-
-	if (val < 128)
-		len = 1;
-	else if (val < 16512)
-		len = 2;
-	else if (val < 2113664)
-		len = 3;
-	else
-		len = 4;
-	*i32 = htole32(val);
+	int len = 0;
+	while (val != 0) {
+		s[++len] = val & 0xff;
+		val >>= 8;
+	}
 	s[0] = len++;
 	return len;
 }
