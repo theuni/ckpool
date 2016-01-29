@@ -25,6 +25,7 @@ struct gbtbase {
 	int transactions;
 	char *txn_data;
 	char *txn_hashes;
+	char *witcommitment;
 	int merkles;
 	char merklehash[16][68];
 	json_t *json;

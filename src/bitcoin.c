@@ -119,7 +119,9 @@ static bool gbt_merkle_bins(gbtbase_t *gbt, json_t *transaction_arr)
 			const char *hash;
 
 			arr_val = json_array_get(transaction_arr, i);
-			hash = json_string_value(json_object_get(arr_val, "hash"));
+			hash = json_string_value(json_object_get(arr_val, "txid"));
+			if(!hash)
+				hash = json_string_value(json_object_get(arr_val, "hash"));
 			txn = json_string_value(json_object_get(arr_val, "data"));
 			len = strlen(txn);
 			memcpy(gbt->txn_data + ofs, txn, len);
@@ -181,6 +183,7 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 {
 	json_t *transaction_arr, *coinbase_aux, *res_val, *val, *array;
 	const char *previousblockhash;
+	const char *witcommitment;
 	char hash_swap[32], tmp[32];
 	uint64_t coinbasevalue;
 	const char *target;
@@ -213,6 +216,7 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 	coinbasevalue = json_integer_value(json_object_get(res_val, "coinbasevalue"));
 	coinbase_aux = json_object_get(res_val, "coinbaseaux");
 	flags = json_string_value(json_object_get(coinbase_aux, "flags"));
+	witcommitment = json_string_value(json_object_get(res_val, "default_witness_commitment"));
 
 	if (unlikely(!previousblockhash || !target || !version || !curtime || !bits || !coinbase_aux || !flags)) {
 		LOGERR("JSON failed to decode GBT %s %s %d %d %s %s", previousblockhash, target, version, curtime, bits, flags);
@@ -263,6 +267,10 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 	if (gbt->transactions) {
 		json_object_set_new_nocheck(gbt->json, "txn_data", json_string_nocheck(gbt->txn_data));
 		json_object_set_new_nocheck(gbt->json, "txn_hashes", json_string_nocheck(gbt->txn_hashes));
+		if(witcommitment) {
+			gbt->witcommitment = strdup(witcommitment);
+			json_object_set_new_nocheck(gbt->json, "witcommitment", json_string_nocheck(gbt->witcommitment));
+		}
 	}
 	json_object_set_new_nocheck(gbt->json, "merkles", json_integer(gbt->merkles));
 	if (gbt->merkles) {
@@ -283,6 +291,7 @@ void clear_gbtbase(gbtbase_t *gbt)
 	dealloc(gbt->flags);
 	dealloc(gbt->txn_data);
 	dealloc(gbt->txn_hashes);
+	dealloc(gbt->witcommitment);
 	json_decref(gbt->json);
 	gbt->json = NULL;
 	memset(gbt, 0, sizeof(gbtbase_t));

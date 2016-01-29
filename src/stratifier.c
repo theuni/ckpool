@@ -109,6 +109,7 @@ struct workbase {
 	int transactions;
 	char *txn_data;
 	char *txn_hashes;
+	char *witcommitment;
 	int merkles;
 	char merklehash[16][68];
 	char merklebin[16][32];
@@ -624,14 +625,16 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	memcpy(wb->coinb2bin + wb->coinb2len, "\xff\xff\xff\xff", 4);
 	wb->coinb2len += 4;
 
+	bool add_commitment = wb->witcommitment != NULL;
+
 	// Generation value
 	g64 = wb->coinbasevalue;
 	if (ckp->donvalid) {
 		d64 = g64 / 200; // 0.5% donation
 		g64 -= d64; // To guarantee integers add up to the original coinbasevalue
-		wb->coinb2bin[wb->coinb2len++] = 2; // 2 transactions
+		wb->coinb2bin[wb->coinb2len++] = 2 + add_commitment;
 	} else
-		wb->coinb2bin[wb->coinb2len++] = 1; // 2 transactions
+		wb->coinb2bin[wb->coinb2len++] = 1 + add_commitment;
 
 	u64 = (uint64_t *)&wb->coinb2bin[wb->coinb2len];
 	*u64 = htole64(g64);
@@ -640,6 +643,17 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	wb->coinb2bin[wb->coinb2len++] = sdata->pubkeytxnlen;
 	memcpy(wb->coinb2bin + wb->coinb2len, sdata->pubkeytxnbin, sdata->pubkeytxnlen);
 	wb->coinb2len += sdata->pubkeytxnlen;
+
+	if (add_commitment) {
+		// 0 value
+		wb->coinb2len += 8;
+
+		int witcommitmentsize = strlen(wb->witcommitment) / 2;
+		wb->coinb2bin[wb->coinb2len++] = witcommitmentsize;
+		LOGDEBUG("adding commitment size %i", witcommitmentsize);
+		hex2bin(&wb->coinb2bin[wb->coinb2len], wb->witcommitment, witcommitmentsize);
+		wb->coinb2len += witcommitmentsize;
+	}
 
 	if (ckp->donvalid) {
 		u64 = (uint64_t *)&wb->coinb2bin[wb->coinb2len];
@@ -1162,6 +1176,9 @@ retry:
 	if (wb->transactions) {
 		json_strdup(&wb->txn_data, val, "txn_data");
 		json_strdup(&wb->txn_hashes, val, "txn_hashes");
+		const char* witcommitment = json_string_value(json_object_get(val, "witcommitment"));
+		if(witcommitment)
+			wb->witcommitment = strdup(witcommitment);
 	} else
 		wb->txn_hashes = ckzalloc(1);
 	json_intcpy(&wb->merkles, val, "merkles");
