@@ -17,6 +17,17 @@
 
 static const char *b58chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+static const char* understood_rules[] = {};
+static bool check_required_rule(const char* rule)
+{
+        int i;
+        for(i = 0; i < sizeof(understood_rules) / sizeof(understood_rules[0]); i++) {
+                if(strncmp(rule, understood_rules[i], sizeof(understood_rules[i])+1) == 0)
+                        return true;
+        }
+        return false;
+}
+
 /* Take a bitcoin address and do some sanity checks on it, then send it to
  * bitcoind to see if it's a valid address */
 bool validate_address(connsock_t *cs, const char *address)
@@ -179,17 +190,19 @@ static const char *gbt_req = "{\"method\": \"getblocktemplate\", \"params\": [{\
  * required to assemble a mining template, storing it in a gbtbase_t structure */
 bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 {
-	json_t *transaction_arr, *coinbase_aux, *res_val, *val, *array;
+	json_t *transaction_arr, *coinbase_aux, *res_val, *val, *array, *rules_arr;
 	const char *previousblockhash;
 	char hash_swap[32], tmp[32];
 	uint64_t coinbasevalue;
 	const char *target;
 	const char *flags;
 	const char *bits;
+	const char *rule;
 	int version;
 	int curtime;
 	int height;
 	int i;
+	int rule_count;
 	bool ret = false;
 
 	val = json_rpc_call(cs, gbt_req);
@@ -220,6 +233,18 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 	}
 
 	gbt->json = json_object();
+
+        rules_arr = json_object_get(res_val, "rules");
+        if(rules_arr) {
+		rule_count = json_array_size(rules_arr);
+		for(i = 0; i < rule_count; i++) {
+			rule = json_string_value(json_array_get(rules_arr, i));
+			if(rule && *rule++ == '!' && !check_required_rule(rule)) {
+				LOGERR("Required rule not understood: %s", rule);
+				goto out;
+			}
+		}
+	}
 
 	hex2bin(hash_swap, previousblockhash, 32);
 	swap_256(tmp, hash_swap);
