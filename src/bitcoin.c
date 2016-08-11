@@ -17,10 +17,13 @@
 
 static const char *b58chars = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-static const char* understood_rules[] = {};
+static const char* understood_rules[] = {"segwit"};
+static const unsigned char witness_nonce[32] = {0};
+static const unsigned char witness_header[] = {0xaa, 0x21, 0xa9, 0xed};
+
 static bool check_required_rule(const char* rule)
 {
-        int i;
+        unsigned int i;
         for(i = 0; i < sizeof(understood_rules) / sizeof(understood_rules[0]); i++) {
                 if(strncmp(rule, understood_rules[i], sizeof(understood_rules[i])+1) == 0)
                         return true;
@@ -127,10 +130,12 @@ static bool gbt_merkle_bins(gbtbase_t *gbt, json_t *transaction_arr)
 
 		for (i = 0; i < gbt->transactions; i++) {
 			char binswap[32];
-			const char *hash;
+			const char *txid;
 
 			arr_val = json_array_get(transaction_arr, i);
-			hash = json_string_value(json_object_get(arr_val, "hash"));
+			txid = json_string_value(json_object_get(arr_val, "txid"));
+			if(!txid)
+				txid = json_string_value(json_object_get(arr_val, "hash"));
 			txn = json_string_value(json_object_get(arr_val, "data"));
 			len = strlen(txn);
 			memcpy(gbt->txn_data + ofs, txn, len);
@@ -150,11 +155,11 @@ static bool gbt_merkle_bins(gbtbase_t *gbt, json_t *transaction_arr)
 				continue;
 			}
 #endif
-			if (!hex2bin(binswap, hash, 32)) {
+			if (!hex2bin(binswap, txid, 32)) {
 				LOGERR("Failed to hex2bin hash in gbt_merkle_bins");
 				return false;
 			}
-			memcpy(gbt->txn_hashes + i * 65, hash, 64);
+			memcpy(gbt->txn_hashes + i * 65, txid, 64);
 			bswap_256(hashbin + 32 + 32 * i, binswap);
 		}
 	}
@@ -183,7 +188,53 @@ static bool gbt_merkle_bins(gbtbase_t *gbt, json_t *transaction_arr)
 	return true;
 }
 
-static const char *gbt_req = "{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": [\"coinbasetxn\", \"workid\", \"coinbase/append\"]}]}\n";
+static const char *gbt_req = "{\"method\": \"getblocktemplate\", \"params\": [{\"capabilities\": [\"coinbasetxn\", \"workid\", \"coinbase/append\"], \"rules\" : [\"segwit\"]}]}\n";
+
+static bool gbt_witness_data(gbtbase_t *gbt, json_t *transaction_arr)
+{
+	int i, binlen, hashcount;
+	json_t *arr_val;
+	uchar *hashbin;
+	const char* hash;
+
+	memset(gbt->witnessdata, 0, sizeof(gbt->witnessdata));
+	binlen = gbt->transactions * 32 + 32;
+	hashbin = alloca(binlen + 32);
+	memset(hashbin, 0, binlen + 32);
+
+	for (hashcount = 0; hashcount < gbt->transactions; hashcount++) {
+		char binswap[32];
+		arr_val = json_array_get(transaction_arr, hashcount);
+		hash = json_string_value(json_object_get(arr_val, "hash"));
+		if(!hash) {
+			LOGERR("Hash missing for transaction");
+			return false;
+		}
+		if (!hex2bin(binswap, hash, 32)) {
+			LOGERR("Failed to hex2bin hash in gbt_merkle_bins");
+			return false;
+		}
+		bswap_256(hashbin + 32 + 32 * hashcount, binswap);
+	}
+
+	// Build merkle root (copied from libblkmaker)
+	for (hashcount++ ; hashcount > 1 ; hashcount /= 2) {
+		if (hashcount % 2 == 1) {
+			// Odd number, duplicate the last
+			memcpy(hashbin + 32 * hashcount, hashbin + 32 * (hashcount - 1), 32);
+			hashcount++;
+		}
+		for (i = 0; i < hashcount; i += 2) {
+			// We overlap input and output here, on the first pair
+			gen_hash(hashbin + 32 * i, hashbin + 32 * (i / 2), 64);
+		}
+	}
+	memcpy(hashbin + 32, &witness_nonce, sizeof(witness_nonce));
+	gen_hash(hashbin, hashbin + sizeof(witness_header), 64);
+	memcpy(hashbin, witness_header, sizeof(witness_header));
+	__bin2hex(gbt->witnessdata, hashbin, 32 + sizeof(witness_header));
+	return true;
+}
 
 /* Request getblocktemplate from bitcoind already connected with a connsock_t
  * and then summarise the information to the most efficient set of data
@@ -204,6 +255,7 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 	int i;
 	int rule_count;
 	bool ret = false;
+	const char* verify_witness;
 
 	val = json_rpc_call(cs, gbt_req);
 	if (!val) {
@@ -285,6 +337,20 @@ bool gen_gbtbase(connsock_t *cs, gbtbase_t *gbt)
 
 	gbt_merkle_bins(gbt, transaction_arr);
 	json_object_set_new_nocheck(gbt->json, "transactions", json_integer(gbt->transactions));
+
+	if(!gbt_witness_data(gbt, transaction_arr)) {
+		LOGERR("Could not create witness commitment");
+		goto out;
+	}
+
+	json_object_set_new_nocheck(gbt->json, "witnessdata", json_string_nocheck(gbt->witnessdata));
+
+	verify_witness = json_string_value(json_object_get(res_val, "default_witness_commitment"));
+	if (verify_witness && strncmp(verify_witness + 4, gbt->witnessdata, sizeof(gbt->witnessdata)) != 0) {
+		LOGERR("Witness from Bitcoind: %s. Calculated Witness: %s", verify_witness, gbt->witnessdata);
+		goto out;
+	}
+
 	if (gbt->transactions) {
 		json_object_set_new_nocheck(gbt->json, "txn_data", json_string_nocheck(gbt->txn_data));
 		json_object_set_new_nocheck(gbt->json, "txn_hashes", json_string_nocheck(gbt->txn_hashes));

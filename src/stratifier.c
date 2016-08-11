@@ -109,6 +109,7 @@ struct workbase {
 	int transactions;
 	char *txn_data;
 	char *txn_hashes;
+	char witnessdata[73];
 	int merkles;
 	char merklehash[16][68];
 	char merklebin[16][32];
@@ -557,7 +558,7 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	uint64_t *u64, g64, d64 = 0;
 	sdata_t *sdata = ckp->data;
 	char header[228];
-	int len, ofs = 0;
+	int len, witnessdata_size, ofs = 0;
 	ts_t now;
 
 	/* Set fixed length coinb1 arrays to be more than enough */
@@ -629,9 +630,9 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	if (ckp->donvalid) {
 		d64 = g64 / 200; // 0.5% donation
 		g64 -= d64; // To guarantee integers add up to the original coinbasevalue
-		wb->coinb2bin[wb->coinb2len++] = 2; // 2 transactions
+		wb->coinb2bin[wb->coinb2len++] = 3;
 	} else
-		wb->coinb2bin[wb->coinb2len++] = 1; // 2 transactions
+		wb->coinb2bin[wb->coinb2len++] = 2;
 
 	u64 = (uint64_t *)&wb->coinb2bin[wb->coinb2len];
 	*u64 = htole64(g64);
@@ -640,6 +641,18 @@ static void generate_coinbase(const ckpool_t *ckp, workbase_t *wb)
 	wb->coinb2bin[wb->coinb2len++] = sdata->pubkeytxnlen;
 	memcpy(wb->coinb2bin + wb->coinb2len, sdata->pubkeytxnbin, sdata->pubkeytxnlen);
 	wb->coinb2len += sdata->pubkeytxnlen;
+
+	// 0 value
+	wb->coinb2len += 8;
+
+	witnessdata_size = 36;
+
+	wb->coinb2bin[wb->coinb2len++] = witnessdata_size + 2; // txout size
+	wb->coinb2bin[wb->coinb2len++] = 0x6a; // OP_RETURN
+	wb->coinb2bin[wb->coinb2len++] = witnessdata_size;
+
+	hex2bin(&wb->coinb2bin[wb->coinb2len], wb->witnessdata, witnessdata_size);
+	wb->coinb2len += witnessdata_size;
 
 	if (ckp->donvalid) {
 		u64 = (uint64_t *)&wb->coinb2bin[wb->coinb2len];
@@ -1177,6 +1190,7 @@ retry:
 			json_array_append_new(wb->merkle_array, json_string(&wb->merklehash[i][0]));
 		}
 	}
+	json_strcpy(wb->witnessdata, val, "witnessdata");
 	json_decref(val);
 	generate_coinbase(ckp, wb);
 
